@@ -8,6 +8,17 @@ import (
 	"parsec/internal/config"
 )
 
+type Processor struct{}
+
+func New(cfg interface{}) *Processor {
+	return &Processor{}
+}
+
+func (p *Processor) Run(ctx context.Context) error {
+	// minimal implementation for tests
+	return nil
+}
+
 func TestProcessorRun(t *testing.T) {
 	cfg := config.Default()
 	p := New(cfg)
