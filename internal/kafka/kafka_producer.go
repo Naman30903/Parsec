@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,6 +12,8 @@ import (
 	"github.com/segmentio/kafka-go/compress"
 
 	"parsec/internal/config"
+	"parsec/internal/logger"
+	"parsec/internal/metrics"
 	"parsec/internal/models"
 )
 
@@ -31,7 +31,6 @@ type Producer struct {
 	writers []*kafka.Writer
 	pool    chan *kafka.Writer
 	closed  atomic.Bool
-	mu      sync.RWMutex
 
 	// Metrics
 	messagesSent   atomic.Uint64
@@ -165,13 +164,21 @@ func (p *Producer) PublishBatch(ctx context.Context, envelopes []*models.Envelop
 		return nil
 	}
 
+	log := logger.WithComponent("kafka_producer")
+	start := time.Now()
+
 	// Convert envelopes to messages
 	messages := make([]kafka.Message, 0, len(envelopes))
 	for _, envelope := range envelopes {
 		data, err := json.Marshal(envelope)
 		if err != nil {
-			log.Printf("failed to serialize envelope %s: %v", envelope.Event.ID, err)
+			log.Error().
+				Err(err).
+				Str("event_id", envelope.Event.ID).
+				Str("tenant_id", envelope.Event.TenantID).
+				Msg("failed to serialize envelope")
 			p.messagesFailed.Add(1)
+			metrics.KafkaPublishTotal.WithLabelValues("failed").Inc()
 			continue
 		}
 
@@ -204,25 +211,54 @@ func (p *Producer) PublishBatch(ctx context.Context, envelopes []*models.Envelop
 
 	// Publish batch with retries
 	err := p.publishBatchWithRetry(ctx, writer, messages)
+	duration := time.Since(start)
+
+	metrics.KafkaPublishDuration.Observe(duration.Seconds())
+
 	if err != nil {
+		log.Error().
+			Err(err).
+			Int("batch_size", len(messages)).
+			Dur("duration", duration).
+			Msg("failed to publish batch to kafka")
 		p.messagesFailed.Add(uint64(len(messages)))
+		metrics.KafkaPublishTotal.WithLabelValues("failed").Add(float64(len(messages)))
 		return err
 	}
 
+	log.Debug().
+		Int("batch_size", len(messages)).
+		Dur("duration", duration).
+		Msg("batch published to kafka")
+
 	p.messagesSent.Add(uint64(len(messages)))
+	metrics.KafkaPublishTotal.WithLabelValues("success").Add(float64(len(messages)))
+
+	bytesTotal := uint64(0)
 	for _, msg := range messages {
-		p.bytesWritten.Add(uint64(len(msg.Value)))
+		bytesTotal += uint64(len(msg.Value))
 	}
+	p.bytesWritten.Add(bytesTotal)
+	metrics.KafkaBytesWritten.Add(float64(bytesTotal))
+
 	return nil
 }
 
 // publishWithRetry publishes a single message with exponential backoff retry
 func (p *Producer) publishWithRetry(ctx context.Context, writer *kafka.Writer, msg kafka.Message) error {
+	log := logger.WithComponent("kafka_producer")
 	var lastErr error
 	backoff := p.cfg.RetryBackoff
 
 	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			log.Warn().
+				Int("attempt", attempt).
+				Dur("backoff", backoff).
+				Msg("retrying kafka publish")
+
+			metrics.KafkaPublishRetries.Inc()
+
 			select {
 			case <-time.After(backoff):
 				backoff *= 2 // Exponential backoff
@@ -237,7 +273,10 @@ func (p *Producer) publishWithRetry(ctx context.Context, writer *kafka.Writer, m
 		}
 
 		lastErr = err
-		log.Printf("kafka publish attempt %d failed: %v", attempt+1, err)
+		log.Warn().
+			Err(err).
+			Int("attempt", attempt+1).
+			Msg("kafka publish attempt failed")
 
 		// Check for non-retryable errors
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -245,16 +284,30 @@ func (p *Producer) publishWithRetry(ctx context.Context, writer *kafka.Writer, m
 		}
 	}
 
+	log.Error().
+		Err(lastErr).
+		Int("max_retries", p.cfg.MaxRetries+1).
+		Msg("kafka publish failed after all retries")
+
 	return fmt.Errorf("failed after %d attempts: %w", p.cfg.MaxRetries+1, lastErr)
 }
 
 // publishBatchWithRetry publishes a batch of messages with exponential backoff retry
 func (p *Producer) publishBatchWithRetry(ctx context.Context, writer *kafka.Writer, messages []kafka.Message) error {
+	log := logger.WithComponent("kafka_producer")
 	var lastErr error
 	backoff := p.cfg.RetryBackoff
 
 	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			log.Warn().
+				Int("attempt", attempt).
+				Int("batch_size", len(messages)).
+				Dur("backoff", backoff).
+				Msg("retrying kafka batch publish")
+
+			metrics.KafkaPublishRetries.Inc()
+
 			select {
 			case <-time.After(backoff):
 				backoff *= 2
@@ -269,12 +322,22 @@ func (p *Producer) publishBatchWithRetry(ctx context.Context, writer *kafka.Writ
 		}
 
 		lastErr = err
-		log.Printf("kafka batch publish attempt %d failed: %v", attempt+1, err)
+		log.Warn().
+			Err(err).
+			Int("attempt", attempt+1).
+			Int("batch_size", len(messages)).
+			Msg("kafka batch publish attempt failed")
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
 	}
+
+	log.Error().
+		Err(lastErr).
+		Int("max_retries", p.cfg.MaxRetries+1).
+		Int("batch_size", len(messages)).
+		Msg("kafka batch publish failed after all retries")
 
 	return fmt.Errorf("batch failed after %d attempts: %w", p.cfg.MaxRetries+1, lastErr)
 }

@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"parsec/internal/config"
 	"parsec/internal/handlers"
 	"parsec/internal/kafka"
+	"parsec/internal/logger"
+	"parsec/internal/metrics"
+	"parsec/internal/middleware"
 	"parsec/internal/models"
 	"parsec/internal/worker"
 )
@@ -36,10 +40,12 @@ func New(cfg *config.Config) *Processor {
 
 // Run starts background goroutines and blocks until context cancelled.
 func (p *Processor) Run(ctx context.Context) error {
-	log.Println("processor starting")
+	log := logger.WithComponent("processor")
+	log.Info().Msg("processor starting")
 
 	// Initialize Kafka producer
 	if err := p.initProducer(); err != nil {
+		log.Error().Err(err).Msg("failed to initialize producer")
 		return fmt.Errorf("failed to initialize producer: %w", err)
 	}
 	defer p.producer.Close()
@@ -51,6 +57,7 @@ func (p *Processor) Run(ctx context.Context) error {
 
 	// Initialize HTTP server
 	if err := p.initHTTPServer(); err != nil {
+		log.Error().Err(err).Msg("failed to initialize HTTP server")
 		return fmt.Errorf("failed to initialize HTTP server: %w", err)
 	}
 
@@ -58,9 +65,9 @@ func (p *Processor) Run(ctx context.Context) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		log.Printf("starting HTTP server on :8080")
+		log.Info().Str("addr", ":8080").Msg("starting HTTP server")
 		if err := p.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP server error: %v", err)
+			log.Error().Err(err).Msg("HTTP server error")
 		}
 	}()
 
@@ -73,7 +80,7 @@ func (p *Processor) Run(ctx context.Context) error {
 
 	// Wait for shutdown signal
 	<-ctx.Done()
-	log.Println("shutdown signal received")
+	log.Info().Msg("shutdown signal received")
 
 	// Graceful shutdown
 	return p.shutdown()
@@ -81,6 +88,7 @@ func (p *Processor) Run(ctx context.Context) error {
 
 // initProducer initializes the Kafka producer
 func (p *Processor) initProducer() error {
+	log := logger.WithComponent("processor")
 	producer, err := kafka.NewProducer(
 		p.cfg.Kafka.Brokers,
 		p.cfg.Kafka.Topic,
@@ -91,12 +99,16 @@ func (p *Processor) initProducer() error {
 	}
 
 	p.producer = producer
-	log.Printf("kafka producer initialized (brokers: %v, topic: %s)", p.cfg.Kafka.Brokers, p.cfg.Kafka.Topic)
+	log.Info().
+		Strs("brokers", p.cfg.Kafka.Brokers).
+		Str("topic", p.cfg.Kafka.Topic).
+		Msg("kafka producer initialized")
 	return nil
 }
 
 // initWorkerPool initializes the worker pool
 func (p *Processor) initWorkerPool() {
+	log := logger.WithComponent("processor")
 	p.workerPool = worker.NewPool(worker.Config{
 		Publisher:    p.producer,
 		EnvelopeChan: p.envelopeChan,
@@ -104,26 +116,36 @@ func (p *Processor) initWorkerPool() {
 		BatchSize:    p.cfg.Kafka.Producer.BatchSize,
 		BatchTimeout: p.cfg.Kafka.Producer.BatchTimeout,
 	})
-	log.Printf("worker pool initialized (%d workers)", p.cfg.Kafka.Producer.PoolSize)
+	log.Info().Int("workers", p.cfg.Kafka.Producer.PoolSize).Msg("worker pool initialized")
 }
 
 // initHTTPServer initializes the HTTP server with handlers
 func (p *Processor) initHTTPServer() error {
 	mux := http.NewServeMux()
 
-	// Ingest handler
+	// Ingest handler (with middleware)
 	ingestHandler := handlers.NewIngestHandler(handlers.IngestConfig{
 		EnvelopeChan: p.envelopeChan,
 		NodeID:       "",               // Will use hostname
 		MaxBodySize:  10 * 1024 * 1024, // 10MB
 	})
-	mux.Handle("/ingest", ingestHandler)
+	mux.Handle("/ingest", middleware.Chain(
+		ingestHandler,
+		middleware.Recovery,
+		middleware.Logging,
+	))
 
 	// Health check
 	mux.HandleFunc("/health", p.healthHandler)
 
 	// Stats endpoint
 	mux.HandleFunc("/stats", p.statsHandler)
+
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// Initialize queue capacity metric
+	metrics.WorkerQueueCapacity.Set(float64(cap(p.envelopeChan)))
 
 	p.httpServer = &http.Server{
 		Addr:         ":8080",
@@ -138,19 +160,20 @@ func (p *Processor) initHTTPServer() error {
 
 // shutdown performs graceful shutdown
 func (p *Processor) shutdown() error {
-	log.Println("initiating graceful shutdown...")
+	log := logger.WithComponent("processor")
+	log.Info().Msg("initiating graceful shutdown")
 
 	// 1. Stop accepting new HTTP requests
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	log.Println("stopping HTTP server...")
+	log.Info().Msg("stopping HTTP server")
 	if err := p.httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		log.Error().Err(err).Msg("HTTP server shutdown error")
 	}
 
 	// 2. Close envelope channel to signal no more incoming envelopes
-	log.Println("closing envelope channel...")
+	log.Info().Msg("closing envelope channel")
 	close(p.envelopeChan)
 
 	// 3. Wait for workers to finish processing (with timeout)
@@ -162,26 +185,27 @@ func (p *Processor) shutdown() error {
 
 	select {
 	case <-done:
-		log.Println("workers stopped gracefully")
+		log.Info().Msg("workers stopped gracefully")
 	case <-time.After(15 * time.Second):
-		log.Println("worker shutdown timeout - forcing exit")
+		log.Warn().Msg("worker shutdown timeout - forcing exit")
 	}
 
 	// 4. Close producer
-	log.Println("closing kafka producer...")
+	log.Info().Msg("closing kafka producer")
 	if err := p.producer.Close(); err != nil {
-		log.Printf("producer close error: %v", err)
+		log.Error().Err(err).Msg("producer close error")
 	}
 
 	// 5. Wait for all goroutines
 	p.wg.Wait()
 
-	log.Println("processor stopped gracefully")
+	log.Info().Msg("processor stopped gracefully")
 	return nil
 }
 
 // reportStats periodically logs statistics
 func (p *Processor) reportStats(ctx context.Context) {
+	log := logger.WithComponent("processor")
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -193,13 +217,17 @@ func (p *Processor) reportStats(ctx context.Context) {
 			workerStats := p.workerPool.Stats()
 			producerStats := p.producer.Stats()
 
-			log.Printf("Stats - Worker: processed=%d failed=%d | Producer: sent=%d failed=%d bytes=%d",
-				workerStats.Processed,
-				workerStats.Failed,
-				producerStats.MessagesSent,
-				producerStats.MessagesFailed,
-				producerStats.BytesWritten,
-			)
+			// Update metrics
+			metrics.WorkerQueueSize.Set(float64(len(p.envelopeChan)))
+
+			log.Info().
+				Uint64("worker_processed", workerStats.Processed).
+				Uint64("worker_failed", workerStats.Failed).
+				Uint64("producer_sent", producerStats.MessagesSent).
+				Uint64("producer_failed", producerStats.MessagesFailed).
+				Uint64("producer_bytes", producerStats.BytesWritten).
+				Int("queue_size", len(p.envelopeChan)).
+				Msg("stats")
 		}
 	}
 }

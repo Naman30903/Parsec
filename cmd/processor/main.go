@@ -2,23 +2,34 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"parsec/internal/config"
+	"parsec/internal/logger"
 	"parsec/internal/processor"
 )
 
 func main() {
+	// Initialize logger
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	logger.Init(logLevel)
+
+	log := logger.Logger.With().Str("component", "main").Logger()
+	log.Info().Msg("Starting Parsec Log Processor")
+
 	// Load configuration from environment
 	cfg := config.FromEnv()
 
-	log.Printf("Starting Parsec Log Processor")
-	log.Printf("Kafka Brokers: %v", cfg.Kafka.Brokers)
-	log.Printf("Kafka Topic: %s", cfg.Kafka.Topic)
-	log.Printf("Worker Pool Size: %d", cfg.Kafka.Producer.PoolSize)
+	log.Info().
+		Strs("kafka_brokers", cfg.Kafka.Brokers).
+		Str("kafka_topic", cfg.Kafka.Topic).
+		Int("worker_pool_size", cfg.Kafka.Producer.PoolSize).
+		Msg("configuration loaded")
 
 	// Create processor
 	p := processor.New(cfg)
@@ -42,14 +53,14 @@ func main() {
 	// Wait for termination signal or error
 	select {
 	case sig := <-sigs:
-		log.Printf("received signal: %v", sig)
+		log.Info().Str("signal", sig.String()).Msg("received signal")
 		cancel()
 	case err := <-errChan:
-		log.Printf("processor error: %v", err)
+		log.Error().Err(err).Msg("processor error")
 		cancel()
 	case <-ctx.Done():
-		log.Println("context cancelled")
+		log.Info().Msg("context cancelled")
 	}
 
-	log.Println("shutdown complete")
+	log.Info().Msg("shutdown complete")
 }

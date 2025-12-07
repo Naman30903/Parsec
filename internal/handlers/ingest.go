@@ -9,6 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
+
+	"parsec/internal/logger"
+	"parsec/internal/metrics"
 	"parsec/internal/models"
 )
 
@@ -95,8 +99,15 @@ type IngestError struct {
 
 // ServeHTTP handles the ingest HTTP request
 func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestID := r.Header.Get("X-Request-ID")
+	log := logger.Logger.With().
+		Str("request_id", requestID).
+		Str("handler", "ingest").
+		Logger()
+
 	// Only accept POST
 	if r.Method != http.MethodPost {
+		log.Warn().Str("method", r.Method).Msg("method not allowed")
 		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -104,6 +115,7 @@ func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check content type
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "application/json" && contentType != "" {
+		log.Warn().Str("content_type", contentType).Msg("invalid content type")
 		h.writeError(w, http.StatusUnsupportedMediaType, "content-type must be application/json")
 		return
 	}
@@ -114,27 +126,41 @@ func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Read body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.Error().Err(err).Msg("failed to read request body")
 		h.writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
 
+	log.Debug().Int("body_size", len(body)).Msg("request body read")
+
 	// Parse JSON
 	events, err := h.parseBody(body)
 	if err != nil {
+		log.Warn().Err(err).Msg("failed to parse request body")
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if len(events) == 0 {
+		log.Warn().Msg("no events in request")
 		h.writeError(w, http.StatusBadRequest, "no events provided")
 		return
 	}
+
+	log.Info().Int("batch_size", len(events)).Msg("processing event batch")
+	metrics.IngestBatchSize.Observe(float64(len(events)))
 
 	// Generate batch ID
 	batchID := h.generateBatchID()
 
 	// Process events
-	response := h.processEvents(events, batchID)
+	response := h.processEvents(events, batchID, log)
+
+	log.Info().
+		Int("accepted", response.Accepted).
+		Int("rejected", response.Rejected).
+		Bool("success", response.Success).
+		Msg("batch processing complete")
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
@@ -175,7 +201,7 @@ func (h *IngestHandler) parseBody(body []byte) ([]LogEventInput, error) {
 }
 
 // processEvents validates, normalizes, and pushes events to the channel
-func (h *IngestHandler) processEvents(inputs []LogEventInput, batchID string) IngestResponse {
+func (h *IngestHandler) processEvents(inputs []LogEventInput, batchID string, log zerolog.Logger) IngestResponse {
 	response := IngestResponse{
 		Success: true,
 		Errors:  make([]IngestError, 0),
@@ -185,12 +211,20 @@ func (h *IngestHandler) processEvents(inputs []LogEventInput, batchID string) In
 		// Convert input to LogEvent
 		event, err := h.convertInput(input)
 		if err != nil {
+			log.Warn().
+				Err(err).
+				Int("index", i).
+				Str("event_id", input.ID).
+				Msg("failed to convert input")
+
 			response.Errors = append(response.Errors, IngestError{
 				Index:   i,
 				EventID: input.ID,
 				Error:   err.Error(),
 			})
 			response.Rejected++
+			metrics.IngestEventsTotal.WithLabelValues(input.TenantID, "rejected").Inc()
+			metrics.IngestValidationErrors.WithLabelValues("conversion_error").Inc()
 			continue
 		}
 
@@ -199,12 +233,21 @@ func (h *IngestHandler) processEvents(inputs []LogEventInput, batchID string) In
 
 		// Validate the event
 		if err := event.Validate(); err != nil {
+			log.Warn().
+				Err(err).
+				Int("index", i).
+				Str("event_id", event.ID).
+				Str("tenant_id", event.TenantID).
+				Msg("validation failed")
+
 			response.Errors = append(response.Errors, IngestError{
 				Index:   i,
 				EventID: event.ID,
 				Error:   err.Error(),
 			})
 			response.Rejected++
+			metrics.IngestEventsTotal.WithLabelValues(event.TenantID, "rejected").Inc()
+			metrics.IngestValidationErrors.WithLabelValues("validation_error").Inc()
 			continue
 		}
 
@@ -215,14 +258,27 @@ func (h *IngestHandler) processEvents(inputs []LogEventInput, batchID string) In
 		select {
 		case h.envelopeChan <- envelope:
 			response.Accepted++
+			metrics.IngestEventsTotal.WithLabelValues(event.TenantID, "accepted").Inc()
+			log.Debug().
+				Str("event_id", event.ID).
+				Str("tenant_id", event.TenantID).
+				Str("severity", string(event.Severity)).
+				Msg("event enqueued")
 		default:
 			// Channel full - reject event
+			log.Error().
+				Str("event_id", event.ID).
+				Str("tenant_id", event.TenantID).
+				Msg("queue full, event rejected")
+
 			response.Errors = append(response.Errors, IngestError{
 				Index:   i,
 				EventID: event.ID,
 				Error:   "internal queue full, try again later",
 			})
 			response.Rejected++
+			metrics.IngestEventsTotal.WithLabelValues(event.TenantID, "rejected").Inc()
+			metrics.IngestValidationErrors.WithLabelValues("queue_full").Inc()
 		}
 	}
 

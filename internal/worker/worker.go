@@ -2,11 +2,13 @@ package worker
 
 import (
 	"context"
-	"log"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"parsec/internal/logger"
+	"parsec/internal/metrics"
 	"parsec/internal/models"
 )
 
@@ -69,7 +71,12 @@ func NewPool(cfg Config) *Pool {
 
 // Start begins processing envelopes
 func (p *Pool) Start() {
-	log.Printf("starting %d workers with batch size %d", p.workers, p.batchSize)
+	log := logger.WithComponent("worker_pool")
+	log.Info().
+		Int("workers", p.workers).
+		Int("batch_size", p.batchSize).
+		Dur("batch_timeout", p.batchTimeout).
+		Msg("starting worker pool")
 
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
@@ -79,18 +86,33 @@ func (p *Pool) Start() {
 
 // Stop gracefully stops all workers
 func (p *Pool) Stop() {
-	log.Println("stopping worker pool...")
+	log := logger.WithComponent("worker_pool")
+	log.Info().Msg("stopping worker pool")
 	p.cancel()
 	p.wg.Wait()
-	log.Println("worker pool stopped")
+	log.Info().Msg("worker pool stopped")
 }
 
 // worker processes envelopes from the channel
 func (p *Pool) worker(id int) {
 	defer p.wg.Done()
 
-	log.Printf("worker %d started", id)
-	defer log.Printf("worker %d stopped", id)
+	log := logger.WithComponent("worker").With().Int("worker_id", id).Logger()
+
+	// Panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			log.Error().
+				Interface("panic", r).
+				Bytes("stack", stack).
+				Msg("worker panic recovered")
+			metrics.PanicsRecovered.WithLabelValues("worker").Inc()
+		}
+	}()
+
+	log.Info().Msg("worker started")
+	defer log.Info().Msg("worker stopped")
 
 	batch := make([]*models.Envelope, 0, p.batchSize)
 	timer := time.NewTimer(p.batchTimeout)
@@ -140,25 +162,47 @@ func (p *Pool) publishBatch(batch []*models.Envelope) {
 		return
 	}
 
+	log := logger.WithComponent("worker")
+	start := time.Now()
+
 	// Create a timeout context for the publish operation
 	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
 	defer cancel()
 
+	log.Debug().Int("batch_size", len(batch)).Msg("publishing batch to kafka")
+
 	err := p.publisher.PublishBatch(ctx, batch)
+	duration := time.Since(start)
+
+	metrics.WorkerBatchPublishDuration.Observe(duration.Seconds())
+
 	if err != nil {
-		log.Printf("failed to publish batch of %d: %v", len(batch), err)
+		log.Error().
+			Err(err).
+			Int("batch_size", len(batch)).
+			Dur("duration", duration).
+			Msg("failed to publish batch")
+
 		p.failed.Add(uint64(len(batch)))
+		metrics.WorkerFailedTotal.Add(float64(len(batch)))
 
 		// Fallback: try publishing individually
 		p.publishIndividually(batch)
 	} else {
+		log.Info().
+			Int("batch_size", len(batch)).
+			Dur("duration", duration).
+			Msg("batch published successfully")
+
 		p.processed.Add(uint64(len(batch)))
+		metrics.WorkerProcessedTotal.Add(float64(len(batch)))
 	}
 }
 
 // publishIndividually tries to publish each envelope separately (fallback)
 func (p *Pool) publishIndividually(batch []*models.Envelope) {
-	log.Printf("attempting individual publish for %d envelopes", len(batch))
+	log := logger.WithComponent("worker")
+	log.Warn().Int("count", len(batch)).Msg("attempting individual publish for failed batch")
 
 	for _, envelope := range batch {
 		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
@@ -166,8 +210,16 @@ func (p *Pool) publishIndividually(batch []*models.Envelope) {
 		cancel()
 
 		if err != nil {
-			log.Printf("failed to publish envelope %s: %v", envelope.Event.ID, err)
+			log.Error().
+				Err(err).
+				Str("event_id", envelope.Event.ID).
+				Str("tenant_id", envelope.Event.TenantID).
+				Msg("failed to publish envelope individually")
 		} else {
+			log.Debug().
+				Str("event_id", envelope.Event.ID).
+				Msg("envelope published individually")
+
 			// Don't count twice - subtract from failed, add to processed
 			p.failed.Add(^uint64(0)) // Subtract 1
 			p.processed.Add(1)
