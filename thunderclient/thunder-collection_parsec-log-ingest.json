@@ -1,0 +1,502 @@
+{
+    "client": "Thunder Client",
+    "collectionName": "Parsec Log Ingest API",
+    "dateExported": "2024-12-07",
+    "version": "1.1",
+    "folders": [
+        {
+            "id": "folder-1",
+            "name": "Valid Requests",
+            "containerId": "",
+            "created": "2024-12-07T00:00:00.000Z",
+            "sortNum": 10000
+        },
+        {
+            "id": "folder-2",
+            "name": "Invalid Payloads",
+            "containerId": "",
+            "created": "2024-12-07T00:00:00.000Z",
+            "sortNum": 20000
+        },
+        {
+            "id": "folder-3",
+            "name": "Auth Tests",
+            "containerId": "",
+            "created": "2024-12-07T00:00:00.000Z",
+            "sortNum": 30000
+        },
+        {
+            "id": "folder-4",
+            "name": "Health & Stats",
+            "containerId": "",
+            "created": "2024-12-07T00:00:00.000Z",
+            "sortNum": 40000
+        }
+    ],
+    "requests": [
+        {
+            "id": "req-1",
+            "colId": "parsec-collection",
+            "containerId": "folder-1",
+            "name": "Ingest Single Log - INFO",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 10000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-001\",\n  \"tenant_id\": \"tenant-acme\",\n  \"timestamp\": \"2024-12-07T10:30:00Z\",\n  \"severity\": \"INFO\",\n  \"source\": \"api-gateway\",\n  \"message\": \"User authentication successful\",\n  \"metadata\": {\n    \"user_id\": \"user-12345\",\n    \"ip_address\": \"192.168.1.100\",\n    \"endpoint\": \"/api/v1/auth\",\n    \"response_time_ms\": 45\n  }\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.accepted",
+                    "action": "equal",
+                    "expected": "1"
+                }
+            ]
+        },
+        {
+            "id": "req-2",
+            "colId": "parsec-collection",
+            "containerId": "folder-1",
+            "name": "Ingest Single Log - ERROR",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 20000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-002\",\n  \"tenant_id\": \"tenant-acme\",\n  \"timestamp\": \"2024-12-07T10:35:00Z\",\n  \"severity\": \"ERROR\",\n  \"source\": \"payment-service\",\n  \"message\": \"Payment processing failed: Insufficient funds\",\n  \"metadata\": {\n    \"transaction_id\": \"txn-98765\",\n    \"user_id\": \"user-54321\",\n    \"amount\": 150.00,\n    \"currency\": \"USD\",\n    \"error_code\": \"INSUFFICIENT_FUNDS\"\n  }\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                }
+            ]
+        },
+        {
+            "id": "req-3",
+            "colId": "parsec-collection",
+            "containerId": "folder-1",
+            "name": "Ingest Batch Logs - Mixed Severity",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 30000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "[\n  {\n    \"id\": \"log-101\",\n    \"tenant_id\": \"tenant-techcorp\",\n    \"timestamp\": \"2024-12-07T11:00:00Z\",\n    \"severity\": \"DEBUG\",\n    \"source\": \"data-pipeline\",\n    \"message\": \"Processing batch 1234\",\n    \"metadata\": {\n      \"batch_id\": \"batch-1234\",\n      \"record_count\": 1000\n    }\n  },\n  {\n    \"id\": \"log-102\",\n    \"tenant_id\": \"tenant-techcorp\",\n    \"timestamp\": \"2024-12-07T11:01:00Z\",\n    \"severity\": \"INFO\",\n    \"source\": \"data-pipeline\",\n    \"message\": \"Batch processing completed successfully\",\n    \"metadata\": {\n      \"batch_id\": \"batch-1234\",\n      \"duration_ms\": 5420\n    }\n  },\n  {\n    \"id\": \"log-103\",\n    \"tenant_id\": \"tenant-techcorp\",\n    \"timestamp\": \"2024-12-07T11:05:00Z\",\n    \"severity\": \"WARN\",\n    \"source\": \"cache-service\",\n    \"message\": \"Cache miss rate exceeding threshold\",\n    \"metadata\": {\n      \"miss_rate\": 0.35,\n      \"threshold\": 0.30,\n      \"cache_size_mb\": 512\n    }\n  },\n  {\n    \"id\": \"log-104\",\n    \"tenant_id\": \"tenant-techcorp\",\n    \"timestamp\": \"2024-12-07T11:10:00Z\",\n    \"severity\": \"ERROR\",\n    \"source\": \"database-replica\",\n    \"message\": \"Replication lag detected\",\n    \"metadata\": {\n      \"lag_seconds\": 45,\n      \"replica_id\": \"replica-03\",\n      \"master_id\": \"master-01\"\n    }\n  },\n  {\n    \"id\": \"log-105\",\n    \"tenant_id\": \"tenant-techcorp\",\n    \"timestamp\": \"2024-12-07T11:15:00Z\",\n    \"severity\": \"CRITICAL\",\n    \"source\": \"database-replica\",\n    \"message\": \"Replication stopped - manual intervention required\",\n    \"metadata\": {\n      \"replica_id\": \"replica-03\",\n      \"error\": \"Connection lost to master\"\n    }\n  }\n]",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.accepted",
+                    "action": "equal",
+                    "expected": "5"
+                }
+            ]
+        },
+        {
+            "id": "req-4",
+            "colId": "parsec-collection",
+            "containerId": "folder-1",
+            "name": "Ingest Batch - Large Payload (10 logs)",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 40000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "[\n  {\"id\": \"log-201\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:00:00Z\", \"severity\": \"INFO\", \"source\": \"checkout-service\", \"message\": \"Order placed successfully\", \"metadata\": {\"order_id\": \"ord-1001\", \"amount\": 99.99}},\n  {\"id\": \"log-202\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:01:00Z\", \"severity\": \"INFO\", \"source\": \"inventory-service\", \"message\": \"Stock updated\", \"metadata\": {\"sku\": \"PROD-5678\", \"quantity\": -1}},\n  {\"id\": \"log-203\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:02:00Z\", \"severity\": \"INFO\", \"source\": \"notification-service\", \"message\": \"Order confirmation sent\", \"metadata\": {\"order_id\": \"ord-1001\", \"email\": \"customer@example.com\"}},\n  {\"id\": \"log-204\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:03:00Z\", \"severity\": \"INFO\", \"source\": \"shipping-service\", \"message\": \"Shipping label generated\", \"metadata\": {\"order_id\": \"ord-1001\", \"tracking\": \"TRACK-ABC123\"}},\n  {\"id\": \"log-205\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:04:00Z\", \"severity\": \"WARN\", \"source\": \"inventory-service\", \"message\": \"Low stock alert\", \"metadata\": {\"sku\": \"PROD-5678\", \"quantity\": 5, \"threshold\": 10}},\n  {\"id\": \"log-206\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:05:00Z\", \"severity\": \"INFO\", \"source\": \"checkout-service\", \"message\": \"Order placed successfully\", \"metadata\": {\"order_id\": \"ord-1002\", \"amount\": 149.99}},\n  {\"id\": \"log-207\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:06:00Z\", \"severity\": \"ERROR\", \"source\": \"payment-gateway\", \"message\": \"Payment declined\", \"metadata\": {\"order_id\": \"ord-1003\", \"reason\": \"Card expired\"}},\n  {\"id\": \"log-208\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:07:00Z\", \"severity\": \"INFO\", \"source\": \"fraud-detection\", \"message\": \"Transaction approved\", \"metadata\": {\"order_id\": \"ord-1002\", \"risk_score\": 0.12}},\n  {\"id\": \"log-209\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:08:00Z\", \"severity\": \"WARN\", \"source\": \"fraud-detection\", \"message\": \"Suspicious activity detected\", \"metadata\": {\"user_id\": \"user-999\", \"risk_score\": 0.78, \"reason\": \"Unusual purchase pattern\"}},\n  {\"id\": \"log-210\", \"tenant_id\": \"tenant-retail\", \"timestamp\": \"2024-12-07T12:09:00Z\", \"severity\": \"INFO\", \"source\": \"analytics-service\", \"message\": \"Daily sales report generated\", \"metadata\": {\"date\": \"2024-12-07\", \"total_orders\": 247, \"revenue\": 24879.50}}\n]",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.accepted",
+                    "action": "equal",
+                    "expected": "10"
+                }
+            ]
+        },
+        {
+            "id": "req-5",
+            "colId": "parsec-collection",
+            "containerId": "folder-2",
+            "name": "Invalid - Missing Required Field (tenant_id)",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 50000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-invalid-001\",\n  \"timestamp\": \"2024-12-07T10:30:00Z\",\n  \"severity\": \"INFO\",\n  \"source\": \"test-service\",\n  \"message\": \"This log is missing tenant_id\"\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "400"
+                },
+                {
+                    "type": "res-body",
+                    "value": "tenant_id",
+                    "action": "contains"
+                }
+            ]
+        },
+        {
+            "id": "req-6",
+            "colId": "parsec-collection",
+            "containerId": "folder-2",
+            "name": "Invalid - Invalid Severity Level",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 60000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-invalid-002\",\n  \"tenant_id\": \"tenant-test\",\n  \"timestamp\": \"2024-12-07T10:30:00Z\",\n  \"severity\": \"INVALID_LEVEL\",\n  \"source\": \"test-service\",\n  \"message\": \"This has an invalid severity\"\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "400"
+                },
+                {
+                    "type": "res-body",
+                    "value": "severity",
+                    "action": "contains"
+                }
+            ]
+        },
+        {
+            "id": "req-7",
+            "colId": "parsec-collection",
+            "containerId": "folder-2",
+            "name": "Invalid - Empty Message",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 70000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-invalid-003\",\n  \"tenant_id\": \"tenant-test\",\n  \"timestamp\": \"2024-12-07T10:30:00Z\",\n  \"severity\": \"INFO\",\n  \"source\": \"test-service\",\n  \"message\": \"\"\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "400"
+                },
+                {
+                    "type": "res-body",
+                    "value": "message",
+                    "action": "contains"
+                }
+            ]
+        },
+        {
+            "id": "req-8",
+            "colId": "parsec-collection",
+            "containerId": "folder-2",
+            "name": "Invalid - Malformed JSON",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 80000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\"id\": \"log-001\", \"tenant_id\": \"tenant-test\", invalid json here",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "400"
+                }
+            ]
+        },
+        {
+            "id": "req-9",
+            "colId": "parsec-collection",
+            "containerId": "folder-2",
+            "name": "Invalid - Batch with Mixed Valid/Invalid",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 90000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "test-api-key-123"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "[\n  {\n    \"id\": \"log-301\",\n    \"tenant_id\": \"tenant-test\",\n    \"timestamp\": \"2024-12-07T13:00:00Z\",\n    \"severity\": \"INFO\",\n    \"source\": \"test-service\",\n    \"message\": \"Valid log entry\"\n  },\n  {\n    \"id\": \"log-302\",\n    \"timestamp\": \"2024-12-07T13:01:00Z\",\n    \"severity\": \"INFO\",\n    \"source\": \"test-service\",\n    \"message\": \"Missing tenant_id - should fail\"\n  },\n  {\n    \"id\": \"log-303\",\n    \"tenant_id\": \"tenant-test\",\n    \"timestamp\": \"2024-12-07T13:02:00Z\",\n    \"severity\": \"INFO\",\n    \"source\": \"test-service\",\n    \"message\": \"Another valid log entry\"\n  }\n]",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "207"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.accepted",
+                    "action": "equal",
+                    "expected": "2"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.rejected",
+                    "action": "equal",
+                    "expected": "1"
+                }
+            ]
+        },
+        {
+            "id": "req-10",
+            "colId": "parsec-collection",
+            "containerId": "folder-3",
+            "name": "Auth - Missing API Key",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 100000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-auth-001\",\n  \"tenant_id\": \"tenant-test\",\n  \"timestamp\": \"2024-12-07T14:00:00Z\",\n  \"severity\": \"INFO\",\n  \"source\": \"test-service\",\n  \"message\": \"Request without API key\"\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "401"
+                }
+            ]
+        },
+        {
+            "id": "req-11",
+            "colId": "parsec-collection",
+            "containerId": "folder-3",
+            "name": "Auth - Invalid API Key",
+            "url": "http://localhost:8080/ingest",
+            "method": "POST",
+            "sortNum": 110000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [
+                {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                },
+                {
+                    "name": "X-API-Key",
+                    "value": "invalid-key-xyz"
+                }
+            ],
+            "body": {
+                "type": "json",
+                "raw": "{\n  \"id\": \"log-auth-002\",\n  \"tenant_id\": \"tenant-test\",\n  \"timestamp\": \"2024-12-07T14:01:00Z\",\n  \"severity\": \"INFO\",\n  \"source\": \"test-service\",\n  \"message\": \"Request with invalid API key\"\n}",
+                "form": []
+            },
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "401"
+                }
+            ]
+        },
+        {
+            "id": "req-12",
+            "colId": "parsec-collection",
+            "containerId": "folder-4",
+            "name": "Health Check",
+            "url": "http://localhost:8080/health",
+            "method": "GET",
+            "sortNum": 120000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [],
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.status",
+                    "action": "equal",
+                    "expected": "healthy"
+                }
+            ]
+        },
+        {
+            "id": "req-13",
+            "colId": "parsec-collection",
+            "containerId": "folder-4",
+            "name": "Runtime Stats",
+            "url": "http://localhost:8080/stats",
+            "method": "GET",
+            "sortNum": 130000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [],
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                },
+                {
+                    "type": "json-query",
+                    "value": "json.goroutines",
+                    "action": "istype",
+                    "expected": "number"
+                }
+            ]
+        },
+        {
+            "id": "req-14",
+            "colId": "parsec-collection",
+            "containerId": "folder-4",
+            "name": "Prometheus Metrics",
+            "url": "http://localhost:8080/metrics",
+            "method": "GET",
+            "sortNum": 140000,
+            "created": "2024-12-07T00:00:00.000Z",
+            "modified": "2024-12-07T00:00:00.000Z",
+            "headers": [],
+            "tests": [
+                {
+                    "type": "res-code",
+                    "value": "200"
+                },
+                {
+                    "type": "res-body",
+                    "value": "http_request_duration_seconds",
+                    "action": "contains"
+                }
+            ]
+        }
+    ]
+}
