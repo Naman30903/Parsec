@@ -8,6 +8,8 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_INIT_LIMIT: 5
     ports:
       - "2181:2181"
     networks:
@@ -17,6 +19,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
 
   # Kafka Broker
   kafka:
@@ -33,6 +39,7 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -40,13 +47,16 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_LOG_RETENTION_HOURS: 168
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_MESSAGE_MAX_BYTES: 10485760
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
     networks:
       - parsec-network
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 5
+      start_period: 30s
     volumes:
       - kafka-data:/var/lib/kafka/data
 
@@ -65,11 +75,13 @@ services:
       SERVER_SERVLET_CONTEXTPATH: "/"
     networks:
       - parsec-network
+    restart: unless-stopped
 
   # Redis - For deduplication and state
   redis:
     image: redis:7-alpine
     container_name: parsec-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
     networks:
@@ -81,6 +93,7 @@ services:
       retries: 5
     volumes:
       - redis-data:/data
+    restart: unless-stopped
 
   # ClickHouse - For log storage
   clickhouse:
@@ -88,7 +101,7 @@ services:
     container_name: parsec-clickhouse
     ports:
       - "8123:8123"
-      - "9440:9440"
+      - "9000:9000"
     environment:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: parsec
@@ -101,15 +114,22 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
 
   # Parsec Processor (Ingestion Service)
   processor:
     build:
       context: .
       dockerfile: Dockerfile
+    image: parsec-processor:latest
     container_name: parsec-processor
     depends_on:
       kafka:
@@ -124,7 +144,7 @@ services:
       # API
       API_KEY: test-api-key-123
       
-      # Kafka
+      # Kafka - Use internal DNS
       KAFKA_BROKERS: kafka:29092
       KAFKA_TOPIC: log-events
       KAFKA_BATCH_SIZE: 100
@@ -136,12 +156,16 @@ services:
       
       # Storage
       STORAGE_BACKEND: clickhouse
+      CLICKHOUSE_DSN: http://parsec:parsec123@clickhouse:8123/logs
       
       # Redis
       REDIS_ADDR: redis:6379
       
       # Logging
       LOG_LEVEL: info
+      
+      # Server
+      PORT: 8080
     networks:
       - parsec-network
     healthcheck:
@@ -149,15 +173,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
 networks:
   parsec-network:
     driver: bridge
     name: parsec-network
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
 
 volumes:
+  zookeeper-data:
+    name: parsec-zookeeper-data
+  zookeeper-logs:
+    name: parsec-zookeeper-logs
   kafka-data:
     name: parsec-kafka-data
   redis-data:

@@ -1,0 +1,33 @@
+# Build artifacts
+bin/
+*.test
+*.out
+
+# Development files
+.env
+.git/
+.gitignore
+.DS_Store
+
+# Documentation
+*.md
+docs/
+thunderclient/
+
+# Test files
+test/
+*_test.go
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+*.log
+processor.log
+
+# OS files
+Thumbs.db
