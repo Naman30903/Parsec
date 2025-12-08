@@ -1,43 +1,166 @@
 version: '3.8'
+
 services:
+  # Zookeeper - Required for Kafka
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.4.0
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: parsec-zookeeper
     environment:
-      - ZOOKEEPER_CLIENT_PORT=2181
-      - ZOOKEEPER_TICK_TIME=2000
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     ports:
-      - '2181:2181'
+      - "2181:2181"
+    networks:
+      - parsec-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # Kafka Broker
   kafka:
-    image: confluentinc/cp-kafka:7.4.0
-    environment:
-      - KAFKA_BROKER_ID=1
-      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
-      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
-      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
-    ports:
-      - '9092:9092'
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: parsec-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    networks:
+      - parsec-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - kafka-data:/var/lib/kafka/data
 
+  # Kafdrop - Kafka UI
+  kafdrop:
+    image: obsidiandynamics/kafdrop:latest
+    container_name: parsec-kafdrop
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    environment:
+      KAFKA_BROKERCONNECT: kafka:29092
+      JVM_OPTS: "-Xms32M -Xmx64M"
+      SERVER_SERVLET_CONTEXTPATH: "/"
+    networks:
+      - parsec-network
+
+  # Redis - For deduplication and state
   redis:
     image: redis:7-alpine
+    container_name: parsec-redis
     ports:
-      - '6379:6379'
+      - "6379:6379"
+    networks:
+      - parsec-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
 
+  # ClickHouse - For log storage
   clickhouse:
     image: clickhouse/clickhouse-server:23.8-alpine
+    container_name: parsec-clickhouse
     ports:
-      - '8123:8123'
-      - '9000:9000'
-
-  postgres:
-    image: postgres:15
+      - "8123:8123"
+      - "9440:9440"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=parsec
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: parsec
+      CLICKHOUSE_PASSWORD: parsec123
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    networks:
+      - parsec-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # Parsec Processor (Ingestion Service)
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parsec-processor
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     ports:
-      - '5432:5432'
+      - "8080:8080"
+    environment:
+      # API
+      API_KEY: test-api-key-123
+      
+      # Kafka
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: log-events
+      KAFKA_BATCH_SIZE: 100
+      KAFKA_BATCH_TIMEOUT_MS: 100
+      KAFKA_MAX_RETRIES: 3
+      KAFKA_POOL_SIZE: 4
+      KAFKA_COMPRESSION: snappy
+      KAFKA_CONSUMER_GROUP: parsec-processor
+      
+      # Storage
+      STORAGE_BACKEND: clickhouse
+      
+      # Redis
+      REDIS_ADDR: redis:6379
+      
+      # Logging
+      LOG_LEVEL: info
+    networks:
+      - parsec-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  parsec-network:
+    driver: bridge
+    name: parsec-network
+
+volumes:
+  kafka-data:
+    name: parsec-kafka-data
+  redis-data:
+    name: parsec-redis-data
+  clickhouse-data:
+    name: parsec-clickhouse-data
