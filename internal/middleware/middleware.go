@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"time"
 
@@ -28,9 +29,47 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	if rw.status == 0 {
 		rw.status = http.StatusOK
 	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.size += n
-	return n, err
+	size, err := rw.ResponseWriter.Write(b)
+	rw.size += size
+	return size, err
+}
+
+// Auth middleware validates the X-API-Key header against an env var
+func Auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get expected API key from env (default for testing)
+		expectedKey := os.Getenv("API_KEY")
+		if expectedKey == "" {
+			expectedKey = "test-api-key-123" // Default for testing
+		}
+
+		// Check X-API-Key header
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey == "" {
+			log := logger.Logger.With().
+				Str("remote_addr", r.RemoteAddr).
+				Str("path", r.URL.Path).
+				Logger()
+			log.Warn().Msg("missing API key")
+
+			http.Error(w, `{"error":"missing X-API-Key header"}`, http.StatusUnauthorized)
+			return
+		}
+
+		if apiKey != expectedKey {
+			log := logger.Logger.With().
+				Str("remote_addr", r.RemoteAddr).
+				Str("path", r.URL.Path).
+				Logger()
+			log.Warn().Msg("invalid API key")
+
+			http.Error(w, `{"error":"invalid API key"}`, http.StatusUnauthorized)
+			return
+		}
+
+		// Valid API key, continue
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Logging middleware logs all HTTP requests with structured logging
@@ -38,36 +77,36 @@ func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Generate request ID
-		requestID := uuid.New().String()
-		r.Header.Set("X-Request-ID", requestID)
+		// Add request ID if not present
+		requestID := r.Header.Get("X-Request-ID")
+		if requestID == "" {
+			requestID = uuid.New().String()
+			r.Header.Set("X-Request-ID", requestID)
+		}
 
 		// Wrap response writer
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 
-		// Create logger with request context
+		// Process request
+		next.ServeHTTP(rw, r)
+
+		// Log request
+		duration := time.Since(start)
 		log := logger.Logger.With().
 			Str("request_id", requestID).
 			Str("method", r.Method).
 			Str("path", r.URL.Path).
+			Int("status", rw.status).
+			Dur("duration_ms", duration).
+			Int("size", rw.size).
 			Str("remote_addr", r.RemoteAddr).
-			Str("user_agent", r.UserAgent()).
 			Logger()
 
-		log.Info().
-			Int("content_length", int(r.ContentLength)).
-			Msg("request received")
-
-		// Call next handler
-		next.ServeHTTP(rw, r)
-
-		// Log response
-		duration := time.Since(start)
-		log.Info().
-			Int("status", rw.status).
-			Int("response_size", rw.size).
-			Dur("duration_ms", duration).
-			Msg("request completed")
+		if rw.status >= 400 {
+			log.Warn().Msg("request completed with error")
+		} else {
+			log.Info().Msg("request completed")
+		}
 
 		// Record metrics
 		metrics.HTTPRequestsTotal.WithLabelValues(
@@ -81,20 +120,6 @@ func Logging(next http.Handler) http.Handler {
 			r.URL.Path,
 			fmt.Sprintf("%d", rw.status),
 		).Observe(duration.Seconds())
-
-		if r.ContentLength > 0 {
-			metrics.HTTPRequestSize.WithLabelValues(
-				r.Method,
-				r.URL.Path,
-			).Observe(float64(r.ContentLength))
-		}
-
-		if rw.size > 0 {
-			metrics.HTTPResponseSize.WithLabelValues(
-				r.Method,
-				r.URL.Path,
-			).Observe(float64(rw.size))
-		}
 	})
 }
 
@@ -103,24 +128,20 @@ func Recovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				// Get stack trace
-				stack := debug.Stack()
-
-				// Log panic
-				requestID := r.Header.Get("X-Request-ID")
-				logger.Logger.Error().
-					Str("request_id", requestID).
+				log := logger.Logger.With().
+					Str("request_id", r.Header.Get("X-Request-ID")).
 					Str("method", r.Method).
 					Str("path", r.URL.Path).
+					Logger()
+
+				log.Error().
 					Interface("panic", err).
-					Bytes("stack", stack).
+					Str("stack", string(debug.Stack())).
 					Msg("panic recovered")
 
-				// Record metric
 				metrics.PanicsRecovered.WithLabelValues("http_handler").Inc()
 
-				// Return error response
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			}
 		}()
 

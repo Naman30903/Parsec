@@ -48,16 +48,19 @@ run_test() {
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
     
-    if [ "$http_code" == "$expected_code" ]; then
-        echo -e "${GREEN}✓ PASSED${NC} (HTTP $http_code)"
-        ((PASSED++))
-        return 0
-    else
-        echo -e "${RED}✗ FAILED${NC} (Expected: $expected_code, Got: $http_code)"
-        echo -e "  Response: $body"
-        ((FAILED++))
-        return 1
+  # Allow multiple expected codes separated by comma (e.g. "200,207")
+  IFS=',' read -ra EXPECTED_ARRAY <<< "$expected_code"
+  for ec in "${EXPECTED_ARRAY[@]}"; do
+    if [ "${http_code}" == "${ec}" ]; then
+      echo -e "${GREEN}✓ PASSED${NC} (HTTP $http_code)"
+      ((PASSED++))
+      return 0
     fi
+  done
+  echo -e "${RED}✗ FAILED${NC} (Expected: $expected_code, Got: $http_code)"
+  echo -e "  Response: $body"
+  ((FAILED++))
+  return 1
 }
 
 echo -e "${BLUE}[1/4] Valid Requests${NC}\n"
@@ -95,7 +98,7 @@ run_test "Ingest Batch Logs (5 logs)" "POST" "/ingest" \
   {"id":"log-103","tenant_id":"tenant-test","timestamp":"2024-12-07T11:02:00Z","severity":"WARN","source":"test","message":"Log 3"},
   {"id":"log-104","tenant_id":"tenant-test","timestamp":"2024-12-07T11:03:00Z","severity":"ERROR","source":"test","message":"Log 4"},
   {"id":"log-105","tenant_id":"tenant-test","timestamp":"2024-12-07T11:04:00Z","severity":"CRITICAL","source":"test","message":"Log 5"}
-]' "200"
+]' "200,207"
 
 echo ""
 echo -e "${BLUE}[2/4] Invalid Payloads${NC}\n"

@@ -164,8 +164,12 @@ func (h *IngestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
+	// If all rejected => 400, if partial success => 207, else 200
 	if response.Rejected > 0 && response.Accepted == 0 {
 		w.WriteHeader(http.StatusBadRequest)
+	} else if response.Rejected > 0 && response.Accepted > 0 {
+		// Partial success — Multi-Status
+		w.WriteHeader(http.StatusMultiStatus)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -24,16 +26,28 @@ func TestEndToEndPipeline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Channel to track processor completion
+	processorDone := make(chan error, 1)
 	go func() {
-		if err := p.Run(ctx); err != nil {
-			t.Logf("processor error: %v", err)
-		}
+		err := p.Run(ctx)
+		processorDone <- err
 	}()
 
 	// Give it time to start
 	time.Sleep(500 * time.Millisecond)
 
-	// Test 1: Health check
+	// Helper function to create authenticated requests
+	createAuthRequest := func(method, url string, body []byte) (*http.Request, error) {
+		req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", "test-api-key-123")
+		return req, nil
+	}
+
+	// Test 1: Health check (no auth required)
 	t.Run("health_check", func(t *testing.T) {
 		resp, err := http.Get("http://localhost:8080/health")
 		if err != nil {
@@ -47,7 +61,7 @@ func TestEndToEndPipeline(t *testing.T) {
 		}
 	})
 
-	// Test 2: Ingest single event
+	// Test 2: Ingest single event (with auth)
 	t.Run("ingest_single_event", func(t *testing.T) {
 		payload := map[string]interface{}{
 			"id":        "test-evt-1",
@@ -59,11 +73,13 @@ func TestEndToEndPipeline(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		resp, err := http.Post(
-			"http://localhost:8080/ingest",
-			"application/json",
-			bytes.NewBuffer(body),
-		)
+		req, err := createAuthRequest("POST", "http://localhost:8080/ingest", body)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Skipf("skipping: server not ready: %v", err)
 			return
@@ -71,23 +87,28 @@ func TestEndToEndPipeline(t *testing.T) {
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
-			t.Errorf("expected 200, got %d", resp.StatusCode)
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Errorf("expected 200, got %d: %s", resp.StatusCode, string(bodyBytes))
+			return
 		}
 
 		var result map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&result)
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
 
-		if !result["success"].(bool) {
+		success, ok := result["success"].(bool)
+		if !ok || !success {
 			t.Errorf("expected success=true: %v", result)
 		}
 	})
 
-	// Test 3: Ingest batch
+	// Test 3: Ingest batch (with auth)
 	t.Run("ingest_batch", func(t *testing.T) {
 		events := []map[string]interface{}{}
 		for i := 0; i < 10; i++ {
 			events = append(events, map[string]interface{}{
-				"id":        "test-evt-" + string(rune(i)),
+				"id":        fmt.Sprintf("test-evt-%d", i),
 				"tenant_id": "tenant-1",
 				"timestamp": time.Now().Format(time.RFC3339),
 				"severity":  "INFO",
@@ -101,11 +122,13 @@ func TestEndToEndPipeline(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		resp, err := http.Post(
-			"http://localhost:8080/ingest",
-			"application/json",
-			bytes.NewBuffer(body),
-		)
+		req, err := createAuthRequest("POST", "http://localhost:8080/ingest", body)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Skipf("skipping: server not ready: %v", err)
 			return
@@ -117,7 +140,7 @@ func TestEndToEndPipeline(t *testing.T) {
 		}
 	})
 
-	// Test 4: Check stats
+	// Test 4: Check stats (no auth required)
 	t.Run("check_stats", func(t *testing.T) {
 		// Wait for processing
 		time.Sleep(1 * time.Second)
@@ -130,20 +153,37 @@ func TestEndToEndPipeline(t *testing.T) {
 		defer resp.Body.Close()
 
 		var stats map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&stats)
+		if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+			t.Logf("failed to decode stats: %v", err)
+			return
+		}
 
 		t.Logf("Stats: %+v", stats)
 	})
 
 	// Test 5: Graceful shutdown
 	t.Run("graceful_shutdown", func(t *testing.T) {
+		// Trigger shutdown
 		cancel()
-		time.Sleep(2 * time.Second)
 
-		// Server should be down
-		_, err := http.Get("http://localhost:8080/health")
+		// Wait for processor to finish (with timeout)
+		select {
+		case err := <-processorDone:
+			if err != nil {
+				t.Logf("processor exited with error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("processor did not shut down within 5 seconds")
+		}
+
+		// Give extra time for server to fully stop
+		time.Sleep(500 * time.Millisecond)
+
+		// Now server should be down
+		client := &http.Client{Timeout: 1 * time.Second}
+		_, err := client.Get("http://localhost:8080/health")
 		if err == nil {
-			t.Error("expected server to be down")
+			t.Error("expected server to be down, but it's still responding")
 		}
 	})
 }

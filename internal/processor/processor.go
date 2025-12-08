@@ -133,6 +133,7 @@ func (p *Processor) initHTTPServer() error {
 		ingestHandler,
 		middleware.Recovery,
 		middleware.Logging,
+		middleware.Auth,
 	))
 
 	// Health check
