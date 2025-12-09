@@ -11,7 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"parsec/internal/config"
-	"parsec/internal/handlers"
+	"parsec/internal/api"
 	"parsec/internal/kafka"
 	"parsec/internal/logger"
 	"parsec/internal/metrics"

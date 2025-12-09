@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"parsec/internal/handlers"
+	"parsec/internal/api"
 	"parsec/internal/models"
 )
 
